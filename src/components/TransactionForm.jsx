@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { db } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 
-export function TransactionForm({ onSuccess, onCancel }) {
+export function TransactionForm({ onSuccess, onCancel, initialData }) {
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   
   const [formData, setFormData] = useState({
-    type: 'expense',
-    amount: '',
-    description: '',
-    date: new Date().toISOString().split('T')[0],
-    categoryId: ''
+    type: initialData?.type || 'expense',
+    amount: initialData?.amount || '',
+    description: initialData?.description || '',
+    date: initialData?.date || new Date().toISOString().split('T')[0],
+    categoryId: initialData?.categoryId || '',
+    isBusiness: initialData?.isBusiness || false
   });
 
   const handleSubmit = async (e) => {
@@ -22,15 +23,19 @@ export function TransactionForm({ onSuccess, onCancel }) {
       amount: parseFloat(formData.amount),
       description: formData.description,
       date: formData.date,
-      categoryId: Number(formData.categoryId)
+      categoryId: Number(formData.categoryId),
+      isBusiness: formData.isBusiness
     });
 
     if (onSuccess) onSuccess();
   };
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => ({ 
+      ...prev, 
+      [name]: type === 'checkbox' ? checked : value 
+    }));
   };
 
   return (
@@ -113,6 +118,20 @@ export function TransactionForm({ onSuccess, onCancel }) {
             onChange={handleChange}
             required
           />
+        </div>
+
+        <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+          <input 
+            type="checkbox" 
+            name="isBusiness" 
+            id="isBusiness"
+            checked={formData.isBusiness}
+            onChange={handleChange}
+            style={{ width: '1.2rem', height: '1.2rem', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
+          />
+          <label htmlFor="isBusiness" style={{ color: 'var(--text-primary)', cursor: 'pointer', fontWeight: '500' }}>
+            Business Expense (Claimable)
+          </label>
         </div>
 
         <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>

@@ -10,6 +10,10 @@ db.version(1).stores({
   settings: 'id, key, value' // for things like learning behavior model data or preferences
 });
 
+db.version(2).stores({
+  transactions: '++id, amount, date, categoryId, type, description, isBusiness',
+});
+
 // Seed initial categories if none exist
 db.on('populate', () => {
   db.categories.bulkAdd([

@@ -10,9 +10,10 @@ export function Dashboard() {
   const debts = useLiveQuery(() => db.debts.toArray()) || [];
 
   // Calculate totals
-  const { totalBalance, monthlyExpenses } = useMemo(() => {
+  const { totalBalance, monthlyExpenses, claimableBusiness } = useMemo(() => {
     let balance = 0;
     let expenses = 0;
+    let business = 0;
     
     // Simplistic calculation for current month
     const now = new Date();
@@ -28,9 +29,12 @@ export function Dashboard() {
         if (txDate.getMonth() === currentMonth && txDate.getFullYear() === currentYear) {
           expenses += t.amount;
         }
+        if (t.isBusiness) {
+          business += t.amount;
+        }
       }
     });
-    return { totalBalance: balance, monthlyExpenses: expenses };
+    return { totalBalance: balance, monthlyExpenses: expenses, claimableBusiness: business };
   }, [transactions]);
 
   const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.remainingAmount, 0), [debts]);
@@ -89,8 +93,9 @@ export function Dashboard() {
           <div style={{ fontSize: '2.5rem', fontWeight: '700' }}>
             ${monthlyExpenses.toFixed(2)}
           </div>
-          <div style={{ color: 'var(--accent-warning)', fontSize: '0.875rem', marginTop: '0.5rem' }}>
-            Tracking higher than usual
+          <div style={{ color: 'var(--accent-warning)', fontSize: '0.875rem', marginTop: '0.5rem', display: 'flex', justifyContent: 'space-between' }}>
+            <span>Tracking higher than usual</span>
+            {claimableBusiness > 0 && <strong style={{ color: 'var(--text-primary)' }}>${claimableBusiness.toFixed(2)} claimable</strong>}
           </div>
         </div>
         
@@ -158,7 +163,10 @@ export function Dashboard() {
                          <Wallet size={20} color={cat ? cat.color : 'var(--text-secondary)'} />
                       </div>
                       <div>
-                        <div style={{ fontWeight: '500' }}>{t.description || (cat ? cat.name : 'Transaction')}</div>
+                        <div style={{ fontWeight: '500', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {t.description || (cat ? cat.name : 'Transaction')}
+                          {t.isBusiness && <span style={{ fontSize: '0.6rem', background: 'var(--accent-primary)', color: '#fff', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>BIZ</span>}
+                        </div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{new Date(t.date).toLocaleDateString()}</div>
                       </div>
                     </div>

@@ -74,23 +74,14 @@ export function ReceiptScanner() {
           <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Check color="var(--accent-primary)" /> Receipt Scanned
           </h2>
-          <p style={{ color: 'var(--text-secondary)' }}>Review the extracted details below.</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Please verify the extracted amounts and categorize it.</p>
         </header>
         
-        {/* We can re-use the TransactionForm and pass initial data, but since it uses local state, we'll just render it with a key or slightly modify it to accept initial data. For now, we'll render a pre-filled form by updating TransactionForm locally or just duplicating a simple review form here. */}
-        <div className="glass-card">
-          <p style={{ color: 'var(--accent-warning)', fontSize: '0.85rem', marginBottom: '1rem' }}>
-            Please verify the amounts, OCR might not be 100% accurate.
-          </p>
-          <div style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', marginBottom: '1rem' }}>
-            <div><strong>Extracted Amount:</strong> ${parsedData.amount || 'Not found'}</div>
-            <div><strong>Extracted Date:</strong> {parsedData.date}</div>
-          </div>
-          
-          <button className="btn-primary" onClick={() => window.history.back()}>
-            Finish & Return
-          </button>
-        </div>
+        <TransactionForm 
+          initialData={parsedData} 
+          onSuccess={() => window.history.back()}
+          onCancel={() => setParsedData(null)}
+        />
       </div>
     );
   }
