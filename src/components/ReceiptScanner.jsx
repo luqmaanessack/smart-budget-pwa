@@ -1,14 +1,76 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Tesseract from 'tesseract.js';
-import { Camera, Upload, FileText, Loader2, Check } from 'lucide-react';
+import { Camera, Upload, FileText, Loader2, Check, Sparkles, AlertCircle } from 'lucide-react';
 import { TransactionForm } from './TransactionForm';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db';
 
 export function ReceiptScanner() {
   const [image, setImage] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [parsedData, setParsedData] = useState(null);
+  const [statusText, setStatusText] = useState('Analyzing image...');
   
+  const settings = useLiveQuery(() => db.settings.toArray()) || [];
+  const [apiKey, setApiKey] = useState('');
+
+  useEffect(() => {
+    const keySetting = settings.find(s => s.key === 'openai_api_key');
+    if (keySetting && keySetting.value) {
+      setApiKey(keySetting.value);
+    } else if (import.meta.env.VITE_OPENAI_API_KEY) {
+      setApiKey(import.meta.env.VITE_OPENAI_API_KEY);
+    }
+  }, [settings]);
+  
+  const extractWithAI = async (rawText) => {
+    try {
+      const prompt = `You are a receipt extraction AI. I am providing you raw OCR text from a receipt. 
+Extract the following:
+1. "shopName": The most likely name of the store or service provider.
+2. "date": The date on the receipt in YYYY-MM-DD format (if found, else null).
+3. "totalAmount": The final total amount paid as a number (if found, else null).
+4. "items": A list of items purchased. Each item should have a "name" and "price".
+
+Return ONLY a valid JSON object. Example:
+{
+  "shopName": "Walmart",
+  "date": "2024-03-15",
+  "totalAmount": 124.55,
+  "items": [
+    {"name": "Milk", "price": 4.99},
+    {"name": "Bread", "price": 2.50}
+  ]
+}
+
+Raw Text:
+${rawText}`;
+
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.1,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!response.ok) throw new Error('API Request Failed');
+      const data = await response.json();
+      return JSON.parse(data.choices[0].message.content);
+
+    } catch (err) {
+      console.error("AI Extraction failed:", err);
+      return null;
+    }
+  };
+
   const handleImageCapture = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -17,6 +79,7 @@ export function ReceiptScanner() {
     setIsProcessing(true);
     setParsedData(null);
     setProgress(0);
+    setStatusText('Running OCR...');
 
     try {
       const result = await Tesseract.recognize(file, 'eng', {
@@ -29,39 +92,51 @@ export function ReceiptScanner() {
 
       const text = result.data.text;
       
-      // Simple Regex to find total amount (looks for Total followed by a number with decimals)
-      const amountRegex = /(?:total|amount due|balance).*?\$?\s*(\d+\.\d{2})/i;
-      const amountMatch = text.match(amountRegex);
-      
-      // Simple Regex to find dates
-      const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/;
-      const dateMatch = text.match(dateRegex);
+      let finalAmount = 0;
+      let finalDate = new Date().toISOString().split('T')[0];
+      let finalDescription = 'Scanned Receipt';
+      let extractedItems = [];
+      let isAiGuessed = false;
 
-      // Find all prices and get the max one as a fallback total
-      const allPricesRegex = /\$?\s*(\d+\.\d{2})/g;
-      const allPrices = [...text.matchAll(allPricesRegex)].map(m => parseFloat(m[1]));
-      const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 0;
+      if (apiKey) {
+        setStatusText('AI Extracting details...');
+        const aiData = await extractWithAI(text);
+        if (aiData) {
+          finalAmount = aiData.totalAmount || 0;
+          finalDate = aiData.date || finalDate;
+          finalDescription = aiData.shopName || 'Scanned Receipt';
+          extractedItems = aiData.items || [];
+          isAiGuessed = true;
+        }
+      }
 
-      let parsedAmount = amountMatch ? parseFloat(amountMatch[1]) : maxPrice;
-      
-      // Format date
-      let parsedDate = new Date().toISOString().split('T')[0]; // fallback to today
-      if (dateMatch) {
-        const d = new Date(dateMatch[1]);
-        if (!isNaN(d.getTime())) {
-          parsedDate = d.toISOString().split('T')[0];
+      // Fallback if AI fails or no key
+      if (!isAiGuessed) {
+        const amountRegex = /(?:total|amount due|balance).*?\$?\s*(\d+\.\d{2})/i;
+        const amountMatch = text.match(amountRegex);
+        const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/;
+        const dateMatch = text.match(dateRegex);
+        const allPrices = [...text.matchAll(/\$?\s*(\d+\.\d{2})/g)].map(m => parseFloat(m[1]));
+        const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 0;
+        
+        finalAmount = amountMatch ? parseFloat(amountMatch[1]) : maxPrice;
+        if (dateMatch) {
+          const d = new Date(dateMatch[1]);
+          if (!isNaN(d.getTime())) finalDate = d.toISOString().split('T')[0];
         }
       }
 
       setParsedData({
-        amount: parsedAmount > 0 ? parsedAmount.toString() : '',
-        date: parsedDate,
-        description: 'Scanned Receipt',
-        type: 'expense'
+        amount: finalAmount > 0 ? finalAmount.toString() : '',
+        date: finalDate,
+        description: finalDescription,
+        type: 'expense',
+        items: extractedItems,
+        aiGuessed: isAiGuessed
       });
 
     } catch (err) {
-      console.error("OCR Error:", err);
+      console.error("Scanning Error:", err);
     } finally {
       setIsProcessing(false);
     }
@@ -69,13 +144,29 @@ export function ReceiptScanner() {
 
   if (parsedData) {
     return (
-      <div className="animate-fade-in">
+      <div className="animate-fade-in" style={{ paddingBottom: '2rem' }}>
         <header style={{ marginBottom: '2rem' }}>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Check color="var(--accent-primary)" /> Receipt Scanned
           </h2>
-          <p style={{ color: 'var(--text-secondary)' }}>Please verify the extracted amounts and categorize it.</p>
+          <p style={{ color: 'var(--text-secondary)' }}>
+            {parsedData.aiGuessed 
+              ? <><Sparkles size={14} color="var(--accent-secondary)" style={{ display: 'inline', verticalAlign: 'middle' }}/> AI extracted the store name and items.</>
+              : 'Basic extraction complete. Add an AI key in Settings for better results.'}
+          </p>
         </header>
+
+        {parsedData.items && parsedData.items.length > 0 && (
+          <div className="glass-card" style={{ marginBottom: '1.5rem', maxHeight: '200px', overflowY: 'auto' }}>
+            <h3 style={{ fontSize: '0.9rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Detected Items</h3>
+            {parsedData.items.map((item, idx) => (
+              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.9rem' }}>
+                <span>{item.name}</span>
+                <strong>${item.price.toFixed(2)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
         
         <TransactionForm 
           initialData={parsedData} 
@@ -90,7 +181,7 @@ export function ReceiptScanner() {
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '2rem' }}>
       <header style={{ textAlign: 'center', marginBottom: '3rem' }}>
         <h1 className="text-gradient" style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>Scan Receipt</h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Automatically extract total amounts and dates.</p>
+        <p style={{ color: 'var(--text-secondary)' }}>Automatically extract store names, totals, and line items.</p>
       </header>
 
       {!isProcessing ? (
@@ -129,11 +220,11 @@ export function ReceiptScanner() {
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--accent-primary)' }}>
             <Loader2 className="animate-spin" />
-            <span style={{ fontWeight: '500' }}>Analyzing Receipt... {progress}%</span>
+            <span style={{ fontWeight: '500' }}>{statusText} {statusText.includes('OCR') && `${progress}%`}</span>
           </div>
           
           <div style={{ width: '100%', height: '6px', background: 'var(--bg-secondary)', borderRadius: '3px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${progress}%`, background: 'var(--gradient-primary)', transition: 'width 0.3s ease' }}></div>
+            <div style={{ height: '100%', width: statusText.includes('OCR') ? `${progress}%` : '100%', background: 'var(--gradient-primary)', transition: 'width 0.3s ease' }}></div>
           </div>
         </div>
       )}

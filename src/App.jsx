@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from './db';
 import { Home, PieChart, Camera, Upload, Wallet, Settings as SettingsIcon } from 'lucide-react';
 
 import { Dashboard } from './components/Dashboard';
@@ -8,6 +10,7 @@ import { DebtManagement } from './components/DebtManagement';
 import { ReceiptScanner } from './components/ReceiptScanner';
 import { StatementUpload } from './components/StatementUpload';
 import { Settings } from './components/Settings';
+import { Onboarding } from './components/Onboarding';
 
 function Navigation() {
   return (
@@ -54,9 +57,14 @@ function Navigation() {
 }
 
 function App() {
+  const settings = useLiveQuery(() => db.settings.toArray()) || [];
+  const onboardingComplete = settings.find(s => s.key === 'onboarding_complete')?.value === 'true';
+  // If loading settings, might want a tiny delay, but it's local DB so it's very fast.
+
   return (
     <Router>
       <div className="app-container">
+        {!onboardingComplete && <Onboarding onComplete={() => window.location.reload()} />}
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Dashboard />} />

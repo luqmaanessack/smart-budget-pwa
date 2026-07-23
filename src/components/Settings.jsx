@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Settings as SettingsIcon, Key, Save, Check } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Save, Check, AlertTriangle } from 'lucide-react';
 
 export function Settings() {
   const [apiKey, setApiKey] = useState('');
@@ -31,6 +31,15 @@ export function Settings() {
     
     setIsSaved(true);
     setTimeout(() => setIsSaved(false), 3000);
+  };
+
+  const handleWipeData = async () => {
+    if (confirm("DANGER: Are you sure you want to wipe ALL your financial data, transactions, and settings? This cannot be undone.")) {
+      if (confirm("FINAL WARNING: All data will be permanently deleted!")) {
+        await db.delete();
+        window.location.reload();
+      }
+    }
   };
 
   return (
@@ -66,6 +75,18 @@ export function Settings() {
             {isSaved ? 'Saved!' : 'Save Key'}
           </button>
         </form>
+      </div>
+      <div className="glass-card" style={{ marginTop: '2rem', border: '1px solid var(--accent-danger)' }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', fontSize: '1.2rem', color: 'var(--accent-danger)' }}>
+          <AlertTriangle size={20} />
+          Danger Zone
+        </h2>
+        <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+          This will permanently delete all your transactions, categories, debts, and settings from this device. It cannot be undone. You will be prompted to set up your profile again.
+        </p>
+        <button className="btn-secondary" style={{ background: 'var(--accent-danger-glow)', color: 'var(--accent-danger)', borderColor: 'var(--accent-danger)' }} onClick={handleWipeData}>
+          Wipe All Data & Start Over
+        </button>
       </div>
     </div>
   );
