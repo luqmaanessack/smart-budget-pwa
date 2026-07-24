@@ -1,221 +1,184 @@
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import {
+  ArrowDownRight, ArrowUpRight, Brain, CalendarDays, CreditCard, Gauge, Lightbulb,
+  ReceiptText, Sparkles, Trash2, TrendingUp, Wallet
+} from 'lucide-react';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { db } from '../db';
-import { Wallet, TrendingUp, TrendingDown, CreditCard, Trash2, Calendar } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
+import { formatMoney, getBudgetCycle, toLocalDate } from '../utils/finance';
+
+const EMPTY_ARRAY = [];
 
 export function Dashboard() {
-  const transactions = useLiveQuery(() => db.transactions.toArray()) || [];
-  const categories = useLiveQuery(() => db.categories.toArray()) || [];
-  const debts = useLiveQuery(() => db.debts.toArray()) || [];
-  const settings = useLiveQuery(() => db.settings.toArray()) || [];
+  const transactions = useLiveQuery(() => db.transactions.toArray()) || EMPTY_ARRAY;
+  const categories = useLiveQuery(() => db.categories.toArray()) || EMPTY_ARRAY;
+  const debts = useLiveQuery(() => db.debts.toArray()) || EMPTY_ARRAY;
+  const settings = useLiveQuery(() => db.settings.toArray()) || EMPTY_ARRAY;
+  const learnedRules = useLiveQuery(() => db.categoryRules.count()) || 0;
 
-  // Parse user profile
-  const { payday, monthlyIncome, goal } = useMemo(() => {
+  const profile = useMemo(() => {
+    const setting = (key, fallback = '') => settings.find((item) => item.key === key)?.value ?? fallback;
+    let categoryBudgets = {};
+    try { categoryBudgets = JSON.parse(setting('category_budgets', '{}')); } catch { categoryBudgets = {}; }
     return {
-      payday: parseInt(settings.find(s => s.key === 'payday')?.value || '1'),
-      monthlyIncome: parseFloat(settings.find(s => s.key === 'monthly_income')?.value || '0'),
-      goal: settings.find(s => s.key === 'financial_goal')?.value || ''
+      payday: Number(setting('payday', '1')),
+      monthlyIncome: Number(setting('monthly_income', '0')),
+      currency: setting('currency', 'ZAR'),
+      goal: setting('financial_goal', 'Spend mindfully'),
+      categoryBudgets
     };
   }, [settings]);
 
-  // Calculate Budget Cycle
-  const { cycleStart, cycleEnd } = useMemo(() => {
-    const now = new Date();
-    let start = new Date(now.getFullYear(), now.getMonth(), payday);
-    let end = new Date(now.getFullYear(), now.getMonth() + 1, payday - 1);
-    
-    if (now.getDate() < payday) {
-      start = new Date(now.getFullYear(), now.getMonth() - 1, payday);
-      end = new Date(now.getFullYear(), now.getMonth(), payday - 1);
+  const cycle = useMemo(() => getBudgetCycle(profile.payday), [profile.payday]);
+  const cycleTransactions = useMemo(() => transactions.filter((transaction) => {
+    const date = toLocalDate(transaction.date);
+    return date && date >= cycle.start && date <= cycle.end;
+  }), [transactions, cycle]);
+
+  const totals = useMemo(() => cycleTransactions.reduce((summary, transaction) => {
+    const amount = Number(transaction.amount) || 0;
+    if (transaction.type === 'income') summary.income += amount;
+    else {
+      summary.expenses += amount;
+      if (transaction.isBusiness) summary.business += amount;
+      summary.byCategory[transaction.categoryId] = (summary.byCategory[transaction.categoryId] || 0) + amount;
     }
-    return { cycleStart: start, cycleEnd: end };
-  }, [payday]);
+    return summary;
+  }, { income: 0, expenses: 0, business: 0, byCategory: {} }), [cycleTransactions]);
 
-  // Calculate totals
-  const { cycleExpenses, claimableBusiness, safeToSpend } = useMemo(() => {
-    let expenses = 0;
-    let business = 0;
+  const plannedIncome = profile.monthlyIncome || totals.income;
+  const available = plannedIncome - totals.expenses;
+  const now = new Date();
+  const totalDays = Math.max(1, Math.ceil((cycle.end - cycle.start) / 86400000));
+  const elapsedDays = Math.max(1, Math.min(totalDays, Math.ceil((now - cycle.start) / 86400000)));
+  const daysLeft = Math.max(1, Math.ceil((cycle.end - now) / 86400000));
+  const dailySafe = Math.max(0, available) / daysLeft;
+  const spendRatio = plannedIncome > 0 ? totals.expenses / plannedIncome : 0;
+  const timeRatio = elapsedDays / totalDays;
+  const totalDebt = debts.reduce((sum, debt) => sum + (Number(debt.remainingAmount) || 0), 0);
 
-    transactions.forEach(t => {
-      if (t.type === 'expense') {
-        const txDate = new Date(t.date);
-        if (txDate >= cycleStart && txDate <= cycleEnd) {
-          expenses += t.amount;
-        }
-        if (t.isBusiness) {
-          business += t.amount;
-        }
-      }
-    });
+  const categorySpending = useMemo(() => Object.entries(totals.byCategory)
+    .map(([categoryId, amount]) => {
+      const category = categories.find((item) => item.id === Number(categoryId));
+      const budget = Number(profile.categoryBudgets[categoryId] || 0);
+      return { id: categoryId, name: category?.name || 'Other', color: category?.color || '#94a3b8', amount, budget };
+    })
+    .sort((a, b) => b.amount - a.amount), [totals.byCategory, categories, profile.categoryBudgets]);
 
-    const remaining = monthlyIncome - expenses;
-    return { cycleExpenses: expenses, claimableBusiness: business, safeToSpend: remaining > 0 ? remaining : 0 };
-  }, [transactions, cycleStart, cycleEnd, monthlyIncome]);
+  const trendData = useMemo(() => Array.from({ length: 6 }, (_, index) => {
+    const month = new Date();
+    month.setDate(1);
+    month.setMonth(month.getMonth() - (5 - index));
+    const amount = transactions.reduce((sum, transaction) => {
+      const date = toLocalDate(transaction.date);
+      return transaction.type === 'expense' && date && date.getMonth() === month.getMonth() && date.getFullYear() === month.getFullYear()
+        ? sum + (Number(transaction.amount) || 0) : sum;
+    }, 0);
+    return { month: month.toLocaleDateString('en-ZA', { month: 'short' }), amount };
+  }), [transactions]);
 
-  const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.remainingAmount, 0), [debts]);
-  const safePercentage = monthlyIncome > 0 ? (cycleExpenses / monthlyIncome) * 100 : 0;
+  const paceDelta = Math.round(Math.abs(spendRatio - timeRatio) * 100);
+  const topCategory = categorySpending[0];
 
-  // Chart Data
-  const chartData = useMemo(() => {
-    const expenseByCategory = {};
-    transactions.forEach(t => {
-      if (t.type === 'expense') {
-        const txDate = new Date(t.date);
-        if (txDate >= cycleStart && txDate <= cycleEnd) {
-          expenseByCategory[t.categoryId] = (expenseByCategory[t.categoryId] || 0) + t.amount;
-        }
-      }
-    });
-
-    return Object.entries(expenseByCategory).map(([catId, amount]) => {
-      const cat = categories.find(c => c.id === Number(catId)) || { name: 'Unknown', color: '#888' };
-      return { name: cat.name, value: amount, color: cat.color };
-    });
-  }, [transactions, categories, cycleStart, cycleEnd]);
-
-  // Trends Data (last 6 months)
-  const trendsData = useMemo(() => {
-    const data = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
-      const monthLabel = d.toLocaleString('default', { month: 'short' });
-      
-      let amount = 0;
-      transactions.forEach(t => {
-        if (t.type === 'expense') {
-          const tDate = new Date(t.date);
-          if (tDate.getMonth() === d.getMonth() && tDate.getFullYear() === d.getFullYear()) {
-            amount += t.amount;
-          }
-        }
-      });
-      data.push({ name: monthLabel, amount });
-    }
-    return data;
-  }, [transactions]);
-
-  const handleDelete = async (id) => {
-    if (confirm("Are you sure you want to delete this transaction?")) {
-      await db.transactions.delete(id);
-    }
+  const deleteTransaction = async (id) => {
+    if (window.confirm('Delete this transaction? This cannot be undone.')) await db.transactions.delete(id);
   };
 
   return (
-    <div className="animate-fade-in" style={{ paddingBottom: '4rem' }}>
-      <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+    <div className="page">
+      <header className="page-header">
         <div>
-          <h1 className="text-gradient" style={{ fontSize: '2.5rem', marginBottom: '0.5rem', lineHeight: 1 }}>Overview</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Goal: {goal || 'Budgeting smartly'}</p>
+          <p className="eyebrow">Your money today</p>
+          <h1 className="page-title">Financial overview</h1>
+          <p className="page-subtitle">Focused on your goal: {profile.goal.toLowerCase()}.</p>
         </div>
-        <div style={{ textAlign: 'right', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', justifyContent: 'flex-end' }}>
-            <Calendar size={14} /> Cycle: {cycleStart.getDate()} {cycleStart.toLocaleString('default', {month:'short'})} - {cycleEnd.getDate()} {cycleEnd.toLocaleString('default', {month:'short'})}
-          </div>
-        </div>
+        <span className="cycle-pill"><CalendarDays size={15} /> {cycle.start.toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })} – {cycle.end.toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' })}</span>
       </header>
-      
-      <div className="glass-card" style={{ marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>Safe to Spend (This Cycle)</h3>
-          <div style={{ padding: '0.5rem', background: 'var(--accent-primary-glow)', borderRadius: 'var(--border-radius-full)' }}>
-            <Wallet size={20} color="var(--accent-primary)" />
-          </div>
-        </div>
-        <div style={{ fontSize: '3rem', fontWeight: '700', color: safeToSpend > 0 ? 'var(--text-primary)' : 'var(--accent-danger)' }}>
-          ${safeToSpend.toFixed(2)}
-        </div>
-        <div style={{ width: '100%', height: '8px', background: 'var(--bg-secondary)', borderRadius: '4px', overflow: 'hidden', marginTop: '1rem', marginBottom: '0.5rem' }}>
-           <div style={{ height: '100%', width: `${Math.min(safePercentage, 100)}%`, background: safePercentage > 90 ? 'var(--accent-danger)' : 'var(--accent-primary)', transition: 'width 0.5s ease' }}></div>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-          <span>Spent: ${cycleExpenses.toFixed(2)}</span>
-          <span>Income: ${monthlyIncome.toFixed(2)}</span>
-        </div>
-      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-        <div className="glass-card" style={{ height: '350px', display: 'flex', flexDirection: 'column' }}>
-          <h3 style={{ marginBottom: '1rem' }}>Cycle Expenses</h3>
-          <div style={{ flex: 1 }}>
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value" stroke="none">
-                    {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '8px' }} itemStyle={{ color: 'var(--text-primary)' }} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>No expenses this cycle</div>
-            )}
-          </div>
+      <section className="glass-card hero-balance">
+        <div>
+          <div className="balance-label"><Wallet size={17} /> Available this cycle</div>
+          <div className="balance-value" style={{ color: available < 0 ? 'var(--accent-danger)' : undefined }}>{formatMoney(available, profile.currency)}</div>
+          <p className="balance-copy">Planned income minus recorded expenses</p>
+          <div className="progress-track"><div className={`progress-fill${spendRatio > .9 ? ' danger' : ''}`} style={{ width: `${Math.min(100, spendRatio * 100)}%` }} /></div>
+          <div className="progress-caption"><span>{formatMoney(totals.expenses, profile.currency)} spent</span><span>{Math.round(spendRatio * 100)}% of {formatMoney(plannedIncome, profile.currency)}</span></div>
         </div>
+        <div className="pace-panel">
+          <div><p className="card-kicker">Safe daily pace</p><div className="pace-number">{formatMoney(dailySafe, profile.currency)}</div><p className="balance-copy">per day for the next {daysLeft} {daysLeft === 1 ? 'day' : 'days'}</p></div>
+          <span className={`status-pill ${spendRatio <= timeRatio ? 'success' : 'warning'}`}><Gauge size={14} /> {spendRatio <= timeRatio ? 'On a comfortable pace' : `${paceDelta}% ahead of cycle pace`}</span>
+        </div>
+      </section>
 
-        <div className="glass-card" style={{ height: '350px', display: 'flex', flexDirection: 'column' }}>
-          <h3 style={{ marginBottom: '1rem' }}>Spending Trends</h3>
-          <div style={{ flex: 1 }}>
+      <section className="metric-grid">
+        <div className="glass-card metric-card"><span className="metric-icon"><ArrowDownRight size={20} /></span><div><p className="card-kicker">Income recorded</p><p className="metric-value">{formatMoney(totals.income, profile.currency, true)}</p></div></div>
+        <div className="glass-card metric-card"><span className="metric-icon blue"><TrendingUp size={20} /></span><div><p className="card-kicker">Cycle spending</p><p className="metric-value">{formatMoney(totals.expenses, profile.currency, true)}</p></div></div>
+        <div className="glass-card metric-card"><span className="metric-icon pink"><CreditCard size={20} /></span><div><p className="card-kicker">Debt remaining</p><p className="metric-value">{formatMoney(totalDebt, profile.currency, true)}</p></div></div>
+      </section>
+
+      <section className="dashboard-grid">
+        <div className="glass-card chart-card">
+          <div className="card-header"><div><p className="card-kicker">Six month view</p><h2 className="card-heading">Spending trend</h2></div></div>
+          <div className="chart-wrap">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={trendsData}>
-                <XAxis dataKey="name" stroke="var(--text-secondary)" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '8px' }} />
-                <Bar dataKey="amount" fill="var(--accent-primary)" radius={[4, 4, 0, 0]} />
+              <BarChart data={trendData} margin={{ top: 8, right: 4, left: 4, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="rgba(255,255,255,.05)" />
+                <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#71877f', fontSize: 11 }} />
+                <Tooltip cursor={{ fill: 'rgba(255,255,255,.025)' }} formatter={(value) => formatMoney(value, profile.currency)} contentStyle={{ background: '#12201d', border: '1px solid rgba(255,255,255,.1)', borderRadius: 10 }} />
+                <Bar dataKey="amount" fill="#5edba2" radius={[6, 6, 2, 2]} maxBarSize={40} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
-      </div>
 
-      <div className="glass-card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-          <h3>Recent Transactions</h3>
-          {claimableBusiness > 0 && <span style={{ fontSize: '0.85rem', color: 'var(--accent-secondary)' }}>${claimableBusiness.toFixed(2)} claimable</span>}
+        <div className="glass-card">
+          <div className="card-header"><div><p className="card-kicker">What needs attention</p><h2 className="card-heading">Smart check-in</h2></div><Lightbulb size={19} color="var(--accent-primary)" /></div>
+          <div className="insight-list">
+            <div className="insight"><Gauge size={18} /><div><strong>{spendRatio <= timeRatio ? 'Spending is tracking well' : 'Ease up on the daily pace'}</strong><p>You’ve used {Math.round(spendRatio * 100)}% of planned income across {Math.round(timeRatio * 100)}% of the cycle.</p></div></div>
+            <div className="insight"><ReceiptText size={18} /><div><strong>{topCategory ? `${topCategory.name} is your largest category` : 'Start recording everyday spending'}</strong><p>{topCategory ? `${formatMoney(topCategory.amount, profile.currency)} recorded this cycle${topCategory.budget ? ` against a ${formatMoney(topCategory.budget, profile.currency)} limit` : ''}.` : 'Add a transaction or import a bank statement to reveal your patterns.'}</p></div></div>
+            <div className="insight"><Brain size={18} /><div><strong>{learnedRules ? `${learnedRules} categorisation ${learnedRules === 1 ? 'rule' : 'rules'} learned` : 'Ready to learn your merchants'}</strong><p>Every category you confirm helps the next statement import require less work.</p></div></div>
+          </div>
         </div>
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {transactions.length === 0 ? (
-            <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem 0' }}>
-              No transactions yet. Start adding some!
-            </div>
-          ) : (
-            [...transactions].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0, 10).map((t, i) => {
-              const cat = categories.find(c => c.id === t.categoryId);
+      </section>
+
+      {categorySpending.length > 0 && (
+        <section className="glass-card" style={{ marginBottom: 18 }}>
+          <div className="card-header"><div><p className="card-kicker">This cycle</p><h2 className="card-heading">Category pulse</h2></div><Link className="status-pill" to="/settings">Set limits</Link></div>
+          <div className="insight-list">
+            {categorySpending.slice(0, 5).map((category) => {
+              const percentage = category.budget ? Math.min(100, (category.amount / category.budget) * 100) : Math.min(100, (category.amount / Math.max(1, totals.expenses)) * 100);
+              return <div key={category.id}>
+                <div className="progress-caption" style={{ marginBottom: 6 }}><span style={{ color: 'var(--text-primary)' }}>{category.name}</span><span>{formatMoney(category.amount, profile.currency)}{category.budget ? ` / ${formatMoney(category.budget, profile.currency)}` : ''}</span></div>
+                <div className="progress-track" style={{ margin: 0 }}><div className={`progress-fill${category.budget && category.amount > category.budget ? ' danger' : ''}`} style={{ width: `${percentage}%`, background: category.amount <= category.budget || !category.budget ? category.color : undefined }} /></div>
+              </div>;
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="glass-card">
+        <div className="card-header"><div><p className="card-kicker">Latest activity</p><h2 className="card-heading">Recent transactions</h2></div>{totals.business > 0 && <span className="status-pill success"><Sparkles size={13} /> {formatMoney(totals.business, profile.currency)} claimable</span>}</div>
+        {transactions.length === 0 ? (
+          <div className="empty-state"><div><ReceiptText size={30} /><p>No transactions yet. Add one or import a statement to get started.</p><Link className="btn-primary" to="/add">Add first transaction</Link></div></div>
+        ) : (
+          <div className="transaction-list">
+            {[...transactions].sort((a, b) => (toLocalDate(b.date) || 0) - (toLocalDate(a.date) || 0)).slice(0, 10).map((transaction) => {
+              const category = categories.find((item) => item.id === transaction.categoryId);
               return (
-                <div key={t.id} className="animate-fade-in" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '1rem', borderBottom: '1px solid var(--glass-border)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: cat ? `${cat.color}20` : 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Wallet size={20} color={cat ? cat.color : 'var(--text-secondary)'} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: '500', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        {t.description || (cat ? cat.name : 'Transaction')}
-                        {t.isBusiness && <span style={{ fontSize: '0.6rem', background: 'var(--accent-primary)', color: '#fff', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>BIZ</span>}
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{new Date(t.date).toLocaleDateString()}</div>
-                    </div>
+                <div className="transaction-row" key={transaction.id}>
+                  <div className="transaction-main">
+                    <span className="category-dot" style={{ color: category?.color, background: `${category?.color || '#94a3b8'}18` }}>{transaction.type === 'income' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}</span>
+                    <div className="transaction-copy"><p className="transaction-description">{transaction.description || category?.name || 'Transaction'}{transaction.isBusiness && <span className="tag">BIZ</span>}</p><p className="transaction-meta">{category?.name || 'Uncategorised'} · {(toLocalDate(transaction.date) || new Date()).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })}</p></div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ fontWeight: '600', color: t.type === 'income' ? 'var(--accent-primary)' : 'var(--text-primary)' }}>
-                      {t.type === 'income' ? '+' : '-'}${t.amount.toFixed(2)}
-                    </div>
-                    <button 
-                      onClick={() => handleDelete(t.id)} 
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent-danger)', opacity: 0.7, padding: '0.25rem' }}
-                      title="Delete Transaction"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+                  <span className={`transaction-amount${transaction.type === 'income' ? ' income' : ''}`}>{transaction.type === 'income' ? '+' : '−'}{formatMoney(transaction.amount, profile.currency)}</span>
+                  <button className="icon-button" title="Delete transaction" onClick={() => deleteTransaction(transaction.id)}><Trash2 size={16} /></button>
                 </div>
-              )
-            })
-          )}
-        </div>
-      </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
