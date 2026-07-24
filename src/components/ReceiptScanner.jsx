@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
-import Tesseract from 'tesseract.js';
-import { Camera, Upload, FileText, Loader2, Check, Sparkles, AlertCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Camera, Upload, Loader2, Check, Sparkles } from 'lucide-react';
 import { TransactionForm } from './TransactionForm';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
+import { formatMoney } from '../utils/finance';
+
+const EMPTY_ARRAY = [];
 
 export function ReceiptScanner() {
   const [image, setImage] = useState(null);
@@ -12,7 +14,8 @@ export function ReceiptScanner() {
   const [parsedData, setParsedData] = useState(null);
   const [statusText, setStatusText] = useState('Analyzing image...');
   
-  const settings = useLiveQuery(() => db.settings.toArray()) || [];
+  const settings = useLiveQuery(() => db.settings.toArray()) || EMPTY_ARRAY;
+  const currency = settings.find((item) => item.key === 'currency')?.value || 'ZAR';
   const [apiKey, setApiKey] = useState('');
 
   useEffect(() => {
@@ -82,6 +85,8 @@ ${rawText}`;
     setStatusText('Running OCR...');
 
     try {
+      // OCR is large, so load it only when the user actually scans a receipt.
+      const { default: Tesseract } = await import('tesseract.js');
       const result = await Tesseract.recognize(file, 'eng', {
         logger: m => {
           if (m.status === 'recognizing text') {
@@ -112,11 +117,11 @@ ${rawText}`;
 
       // Fallback if AI fails or no key
       if (!isAiGuessed) {
-        const amountRegex = /(?:total|amount due|balance).*?\$?\s*(\d+\.\d{2})/i;
+        const amountRegex = /(?:total|amount due|balance).*?(?:R|\$)?\s*(\d+\.\d{2})/i;
         const amountMatch = text.match(amountRegex);
-        const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/;
+        const dateRegex = /(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/;
         const dateMatch = text.match(dateRegex);
-        const allPrices = [...text.matchAll(/\$?\s*(\d+\.\d{2})/g)].map(m => parseFloat(m[1]));
+        const allPrices = [...text.matchAll(/(?:R|\$)?\s*(\d+\.\d{2})/g)].map(m => parseFloat(m[1]));
         const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 0;
         
         finalAmount = amountMatch ? parseFloat(amountMatch[1]) : maxPrice;
@@ -162,7 +167,7 @@ ${rawText}`;
             {parsedData.items.map((item, idx) => (
               <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.9rem' }}>
                 <span>{item.name}</span>
-                <strong>${item.price.toFixed(2)}</strong>
+                <strong>{formatMoney(item.price, currency)}</strong>
               </div>
             ))}
           </div>

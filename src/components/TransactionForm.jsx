@@ -1,10 +1,20 @@
-import { useState } from 'react';
-import { db } from '../db';
+import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { ArrowDownRight, ArrowUpRight, Brain, Check } from 'lucide-react';
+import { db } from '../db';
+import { formatMoney, learnCategory, normalizeMerchant, suggestCategory, transactionFingerprint } from '../utils/finance';
+
+const EMPTY_ARRAY = [];
 
 export function TransactionForm({ onSuccess, onCancel, initialData }) {
-  const categories = useLiveQuery(() => db.categories.toArray()) || [];
-  
+  const categories = useLiveQuery(() => db.categories.toArray()) || EMPTY_ARRAY;
+  const rules = useLiveQuery(() => db.categoryRules.toArray()) || EMPTY_ARRAY;
+  const transactions = useLiveQuery(() => db.transactions.toArray()) || EMPTY_ARRAY;
+  const settings = useLiveQuery(() => db.settings.toArray()) || EMPTY_ARRAY;
+  const currency = settings.find((item) => item.key === 'currency')?.value || 'ZAR';
+  const [saving, setSaving] = useState(false);
+  const [categoryTouched, setCategoryTouched] = useState(Boolean(initialData?.categoryId));
+  const [suggestionReason, setSuggestionReason] = useState('');
   const [formData, setFormData] = useState({
     type: initialData?.type || 'expense',
     amount: initialData?.amount || '',
@@ -14,135 +24,95 @@ export function TransactionForm({ onSuccess, onCancel, initialData }) {
     isBusiness: initialData?.isBusiness || false
   });
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!formData.amount || !formData.categoryId) return;
+  const availableCategories = useMemo(() => categories.filter((category) => category.type === formData.type), [categories, formData.type]);
 
-    await db.transactions.add({
-      type: formData.type,
-      amount: parseFloat(formData.amount),
-      description: formData.description,
-      date: formData.date,
-      categoryId: Number(formData.categoryId),
-      isBusiness: formData.isBusiness
-    });
+  useEffect(() => {
+    if (categoryTouched || formData.description.trim().length < 3) return;
+    const suggestion = suggestCategory({ description: formData.description, type: formData.type, categories, rules, transactions });
+    if (suggestion) {
+      setFormData((current) => ({ ...current, categoryId: suggestion.categoryId }));
+      setSuggestionReason(suggestion.reason);
+    }
+  }, [formData.description, formData.type, categoryTouched, categories, rules, transactions]);
 
-    if (onSuccess) onSuccess();
+  const changeType = (type) => {
+    setCategoryTouched(false);
+    setSuggestionReason('');
+    setFormData((current) => ({ ...current, type, categoryId: '', isBusiness: type === 'expense' ? current.isBusiness : false }));
   };
 
-  const handleChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    setFormData(prev => ({ 
-      ...prev, 
-      [name]: type === 'checkbox' ? checked : value 
-    }));
+  const handleChange = (event) => {
+    const { name, value, type, checked } = event.target;
+    if (name === 'categoryId') {
+      setCategoryTouched(true);
+      setSuggestionReason('');
+    }
+    setFormData((current) => ({ ...current, [name]: type === 'checkbox' ? checked : value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    if (!formData.amount || !formData.categoryId || !formData.description.trim()) return;
+    setSaving(true);
+    const transaction = {
+      type: formData.type,
+      amount: Math.abs(Number(formData.amount)),
+      description: formData.description.trim(),
+      date: formData.date,
+      categoryId: Number(formData.categoryId),
+      isBusiness: formData.type === 'expense' && formData.isBusiness,
+      merchant: normalizeMerchant(formData.description),
+      source: initialData ? 'receipt' : 'manual'
+    };
+    transaction.fingerprint = transactionFingerprint(transaction);
+    await db.transactions.add(transaction);
+    await learnCategory({ description: transaction.description, type: transaction.type, categoryId: transaction.categoryId, source: 'confirmed' });
+    setSaving(false);
+    onSuccess?.();
   };
 
   return (
-    <div className="glass-card animate-fade-in" style={{ maxWidth: '500px', margin: '0 auto' }}>
-      <h2 style={{ marginBottom: '1.5rem' }}>Add Transaction</h2>
-      
+    <div className="glass-card form-card animate-fade-in">
+      <div className="card-header">
+        <div><p className="eyebrow">Quick capture</p><h2 style={{ margin: 0 }}>{initialData ? 'Review transaction' : 'Add transaction'}</h2></div>
+        {formData.amount && <span className="status-pill">{formatMoney(formData.amount, currency)}</span>}
+      </div>
       <form onSubmit={handleSubmit}>
-        <div className="form-group" style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
-          <button 
-            type="button" 
-            className={`btn ${formData.type === 'expense' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ flex: 1, background: formData.type === 'expense' ? 'var(--accent-danger)' : undefined, boxShadow: formData.type === 'expense' ? '0 4px 15px var(--accent-danger-glow)' : undefined }}
-            onClick={() => setFormData(prev => ({ ...prev, type: 'expense' }))}
-          >
-            Expense
-          </button>
-          <button 
-            type="button" 
-            className={`btn ${formData.type === 'income' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ flex: 1 }}
-            onClick={() => setFormData(prev => ({ ...prev, type: 'income' }))}
-          >
-            Income
-          </button>
+        <div className="segmented" role="group" aria-label="Transaction type">
+          <button type="button" className={`segment${formData.type === 'expense' ? ' active-expense' : ''}`} onClick={() => changeType('expense')}><ArrowDownRight size={17} /> Expense</button>
+          <button type="button" className={`segment${formData.type === 'income' ? ' active-income' : ''}`} onClick={() => changeType('income')}><ArrowUpRight size={17} /> Income</button>
         </div>
 
         <div className="form-group">
-          <label className="form-label">Amount ($)</label>
-          <input 
-            type="number" 
-            name="amount"
-            step="0.01"
-            className="form-input" 
-            placeholder="0.00"
-            value={formData.amount}
-            onChange={handleChange}
-            required
-          />
+          <label className="form-label" htmlFor="amount">Amount</label>
+          <input id="amount" name="amount" className="form-input" type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0.00" value={formData.amount} onChange={handleChange} required autoFocus={!initialData} />
         </div>
-
         <div className="form-group">
-          <label className="form-label">Description</label>
-          <input 
-            type="text" 
-            name="description"
-            className="form-input" 
-            placeholder="What was this for?"
-            value={formData.description}
-            onChange={handleChange}
-            required
-          />
+          <label className="form-label" htmlFor="description">Merchant or description</label>
+          <input id="description" name="description" className="form-input" type="text" placeholder="e.g. Checkers, rent, salary" value={formData.description} onChange={handleChange} required />
         </div>
-
         <div className="form-group">
-          <label className="form-label">Category</label>
-          <select 
-            name="categoryId"
-            className="form-input"
-            value={formData.categoryId}
-            onChange={handleChange}
-            required
-            style={{ appearance: 'none', background: 'rgba(0, 0, 0, 0.4)' }} // Darker bg for select to match inputs
-          >
-            <option value="" disabled>Select a category</option>
-            {categories.filter(c => c.type === formData.type).map(cat => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name}
-              </option>
-            ))}
+          <label className="form-label" htmlFor="categoryId">Category {suggestionReason && <span className="form-hint learn-badge"><Brain size={12} style={{ verticalAlign: -2 }} /> {suggestionReason === 'learned' ? 'Learned from you' : suggestionReason === 'history' ? 'Matched from history' : 'Suggested'}</span>}</label>
+          <select id="categoryId" name="categoryId" className="form-input" value={formData.categoryId} onChange={handleChange} required>
+            <option value="">Choose a category</option>
+            {availableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
           </select>
         </div>
-
         <div className="form-group">
-          <label className="form-label">Date</label>
-          <input 
-            type="date" 
-            name="date"
-            className="form-input" 
-            value={formData.date}
-            onChange={handleChange}
-            required
-          />
+          <label className="form-label" htmlFor="date">Date</label>
+          <input id="date" name="date" className="form-input" type="date" value={formData.date} onChange={handleChange} required />
         </div>
 
-        <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
-          <input 
-            type="checkbox" 
-            name="isBusiness" 
-            id="isBusiness"
-            checked={formData.isBusiness}
-            onChange={handleChange}
-            style={{ width: '1.2rem', height: '1.2rem', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
-          />
-          <label htmlFor="isBusiness" style={{ color: 'var(--text-primary)', cursor: 'pointer', fontWeight: '500' }}>
-            Business Expense (Claimable)
-          </label>
-        </div>
+        {formData.type === 'expense' && (
+          <div className="check-row">
+            <input id="isBusiness" name="isBusiness" type="checkbox" checked={formData.isBusiness} onChange={handleChange} />
+            <label htmlFor="isBusiness"><strong>Business or claimable expense</strong><br /><span className="form-hint">Keep it visible for reimbursements or tax-time review.</span></label>
+          </div>
+        )}
 
-        <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
-          {onCancel && (
-            <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={onCancel}>
-              Cancel
-            </button>
-          )}
-          <button type="submit" className="btn btn-primary" style={{ flex: 2 }}>
-            Save Transaction
-          </button>
+        <div className="button-row">
+          {onCancel && <button type="button" className="btn-secondary" onClick={onCancel}>Cancel</button>}
+          <button type="submit" className="btn-primary" disabled={saving || !formData.categoryId}>{saving ? 'Saving…' : 'Save transaction'} <Check size={17} /></button>
         </div>
       </form>
     </div>
